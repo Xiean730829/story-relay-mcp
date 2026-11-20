@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>故事接龙 · 小星故事屋</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="/">✦ 小星故事屋</a><span id="connection" class="pill">还没有连接</span></header>
+    <section class="intro">
+      <span class="eyebrow">一个人一句，一个新世界</span>
+      <h1>故事接龙<span>让想象，接着发生。</span></h1>
+      <p>你说一句，小星接一句。一起让小小的开头，长成大大的冒险。</p>
+    </section>
+    <div class="layout">
+      <section class="game-panel">
+        <div class="book-top"><div><span class="eyebrow">我们的故事</span><h2 id="story-title">故事，还差一个开头</h2></div><span id="story-count">0 句</span></div>
+        <div id="story" class="story" aria-live="polite">
+          <div class="empty" id="empty"><div class="illustration" aria-hidden="true">☾<span>✦</span><i>✧</i></div><h3>从前，有一个……</h3><p>一只会飞的猫？一座糖果城堡？<br>第一个奇思妙想，交给你和小星。</p></div>
+        </div>
+        <p id="hint" role="status">先在右侧连接灵矽，再开启麦克风。</p>
+        <div class="game-controls"><button id="mic" class="primary" disabled>开启麦克风</button><button id="replace" disabled>换个故事</button><button id="end" disabled>结束故事</button></div>
+        <form id="text-form" class="text-form"><label class="sr-only" for="sentence">输入一句故事</label><input id="sentence" maxlength="400" placeholder="也可以打字接一句……" disabled><button id="send" disabled>接一句</button></form>
+        <p class="footnote">小星说完后轮到你。安静等待超时会结束本次故事。</p>
+      </section>
+      <aside>
+        <section id="account-info" class="card account-info" hidden>
+          <span class="eyebrow">你的私有部署</span><h2>已接入灵矽账号</h2>
+          <dl><dt>平台账号标识（可与登录手机号不同）</dt><dd id="account-name"></dd><dt>运行位置</dt><dd>这台电脑 · MCP Proxy</dd><dt>代理连接</dt><dd id="proxy-status"></dd></dl>
+          <details><summary>智能体与 MCP 标识</summary><dl><dt>Agent ID</dt><dd id="deployed-agent"></dd><dt>MCP Server ID</dt><dd id="deployed-server"></dd><dt>MCP 实例 ID</dt><dd id="deployed-mcp"></dd><dt>代理凭据到期时间</dt><dd id="proxy-expiry"></dd></dl></details>
+          <p class="field-help">在 <a href="https://xrobo.qiniu.com/" target="_blank" rel="noopener">灵矽控制台</a> 的“自定义 MCP”“我的 MCP”和智能体配置中查看。电脑和本程序需要保持运行。</p>
+        </section>
+        <section class="settings card">
+          <span class="eyebrow">准备出发</span><h2>把小星接进来</h2>
+          <form id="connect-form">
+            <label for="api-key">灵矽 API Key</label><input id="api-key" type="password" autocomplete="off" placeholder="在这里粘贴完整的 API Key">
+            <p class="field-help">仅用于当前连接，不保存到文件或浏览器。</p>
+            <label class="checkbox"><input id="create-agent" type="checkbox" checked>新建专用故事智能体</label>
+            <p class="field-help">自动配置故事规则与工具调用，会在你的灵矽账号下创建一个智能体。</p>
+            <label for="agent-id">智能体 Agent ID <span>已有时填写</span></label><input id="agent-id" autocomplete="off" placeholder="首次创建无需填写" disabled>
+            <div class="two-fields"><div><label for="first-speaker">谁先开头</label><select id="first-speaker"><option value="ai">小星先开头</option><option value="child">我先开头</option></select></div><div><label for="silence">等待多久</label><select id="silence"><option value="60">60 秒</option><option value="90">90 秒</option><option value="30">30 秒</option><option value="15">15 秒（调试）</option></select></div></div>
+            <details><summary>设备与接入说明</summary><label for="device-id">模拟设备 MAC</label><input id="device-id" autocomplete="off"><p class="field-help">只使用本演示的虚拟设备身份。使用现有智能体时，先复制 <a href="/prompt.txt" target="_blank" rel="noopener">故事提示词</a>，并将其意图模式设为“统一意图识别 / 函数调用”。</p></details>
+            <button id="connect" class="primary full" type="submit">连接并开始</button><button id="disconnect" class="full" type="button" hidden>断开连接</button>
+          </form>
+          <p id="error" class="error" role="alert" hidden></p>
+        </section>
+        <details class="card debug" open><summary>链路观察 <span id="tool-count">等待 MCP</span></summary><p class="field-help">这里显示灵矽实际发来的工具发现与调用。</p><ol id="trace" aria-live="polite"><li class="muted">连接后，可以看到 initialize、tools/list 和 tools/call。</li></ol></details>
+      </aside>
+    </div>
+    <footer>浏览器模拟设备 · 本地 MCP 游戏 · 灵矽语音 AI <span>本演示不保存录音；语音会发送至灵矽处理。</span></footer>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

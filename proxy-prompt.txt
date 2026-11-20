@@ -1,0 +1,5 @@
+
+私有MCP接入补充规则：
+- 本次浏览器会话标识是 {{story_session}}。如果它已被替换为一串实际标识，调用 self.story.start 时把它原样放入 session_key；如果仍是未替换的占位符，则不传 session_key。
+- 开始工具返回 story_id。每次 self.story.continue 和 self.story.end 都必须传入同一故事的 story_id；换故事时调用 start 并使用新返回的 story_id，不能沿用旧值。
+- 所有标识仅供工具调用，不向孩子朗读，不请孩子记忆或提供它们。只朗读返回的 ai_sentence 或 ending。
