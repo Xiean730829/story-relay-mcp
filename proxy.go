@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ const (
 	proxyRetryDelay  = 3 * time.Second
 	storyRetention   = 30 * time.Minute
 	proxyEventBuffer = 8
+	callTraceLimit   = 20
 )
 
 type proxyUpdate struct {
@@ -40,19 +42,39 @@ type proxyStory struct {
 	updated time.Time
 }
 
-type privateProxy struct {
-	endpoint  string
-	online    atomic.Bool
-	calls     atomic.Uint64
-	ready     chan struct{}
-	readyOnce sync.Once
-	mu        sync.Mutex
-	games     map[string]*proxyStory
-	watchers  map[string]proxyWatcher
-	info      privateDeployment
+type proxyCallSession struct {
+	demo    *callDemo
+	updated time.Time
+	resume  string
 }
 
-func proxyTools() []toolDescription {
+type callTrace struct {
+	Tool   string `json:"tool"`
+	OK     bool   `json:"ok"`
+	Status string `json:"status,omitempty"`
+}
+
+type privateProxy struct {
+	endpoint     string
+	online       atomic.Bool
+	calls        atomic.Uint64
+	ready        chan struct{}
+	readyOnce    sync.Once
+	mu           sync.Mutex
+	games        map[string]*proxyStory
+	watchers     map[string]proxyWatcher
+	info         privateDeployment
+	lobby        *lobby
+	callDemo     *callDemo
+	callMu       sync.Mutex
+	callSessions map[string]*proxyCallSession
+	callTurns    map[string]*proxyCallSession
+	traceMu      sync.Mutex
+	callTrace    []callTrace
+	replays      atomic.Uint64
+}
+
+func (p *privateProxy) tools() []toolDescription {
 	tools := storyTools()
 	handle := schemaProperty{Type: schemaString, MinLength: 1, MaxLength: 64}
 	for i := range tools {
@@ -65,6 +87,12 @@ func proxyTools() []toolDescription {
 		tools[i].InputSchema.Required = append(tools[i].InputSchema.Required, fieldStoryID)
 		tools[i].Description += " story_id必须使用开始工具返回的当前故事标识。"
 	}
+	if p.callDemo != nil {
+		phoneTools := callDemoTools()
+		phoneTools = append(phoneTools, lobbyTools()...)
+		return append(phoneTools, tools...)
+	}
+	tools = append(tools, lobbyTools()...)
 	return tools
 }
 
@@ -143,11 +171,11 @@ func (p *privateProxy) connect(ctx context.Context) error {
 		case methodList:
 			reply.Result = struct {
 				Tools []toolDescription `json:"tools"`
-			}{Tools: proxyTools()}
+			}{Tools: p.tools()}
 		case methodPing:
 			reply.Result = struct{}{}
 		case methodCall:
-			reply.Result = p.call(request)
+			reply.Result = p.call(ctx, request)
 		default:
 			reply.Error = &rpcError{Code: rpcMissing, Message: "method not found"}
 		}
@@ -157,7 +185,7 @@ func (p *privateProxy) connect(ctx context.Context) error {
 		if request.Method == methodList {
 			p.online.Store(true)
 			p.readyOnce.Do(func() { close(p.ready) })
-			slog.Info("private MCP proxy tools ready", "tools", len(proxyTools()))
+			slog.Info("private MCP proxy tools ready", "tools", len(p.tools()))
 		}
 	}
 }
@@ -168,8 +196,9 @@ type textContent struct {
 }
 
 type mcpToolResult struct {
-	Content []textContent `json:"content"`
-	IsError bool          `json:"isError"`
+	Content           []textContent `json:"content"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
+	IsError           bool          `json:"isError"`
 }
 
 func toolText(text string, failed bool) mcpToolResult {
@@ -191,8 +220,141 @@ func mcpInitialization() any {
 	return result
 }
 
-func (p *privateProxy) call(request rpcMessage) mcpToolResult {
+func (p *privateProxy) callPhone(ctx context.Context, name string, raw json.RawMessage) mcpToolResult {
+	var input callDemoInputs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return toolText("故事工具参数格式不正确", true)
+		}
+	}
+	p.callMu.Lock()
+	defer p.callMu.Unlock()
+
+	if p.callSessions == nil {
+		p.callSessions = make(map[string]*proxyCallSession)
+		p.callTurns = make(map[string]*proxyCallSession)
+	}
+	now := time.Now()
+	for key, session := range p.callSessions {
+		if now.Sub(session.updated) > storyRetention {
+			delete(p.callSessions, key)
+			delete(p.callTurns, session.demo.turn)
+			delete(p.callTurns, session.resume)
+		}
+	}
+
+	var session *proxyCallSession
+	switch name {
+	case toolCallLobby:
+		if input.Lobby != "" {
+			session = p.callSessions[input.Lobby]
+			break
+		}
+		session = &proxyCallSession{demo: &callDemo{
+			history: p.callDemo.history, prepare: p.callDemo.prepare, pool: p.callDemo.pool,
+		}}
+	case toolCallOpen:
+		session = p.callSessions[input.Lobby]
+	default:
+		session = p.callTurns[input.Turn]
+		if name == toolCallTurn && input.Turn == "" && input.Lobby != "" {
+			session = p.callSessions[input.Lobby]
+			if session != nil {
+				if session.demo.game.Status != storyPlaying {
+					return toolText("请先用本次 lobby_ticket 调用 self.call.open 开始故事，再接话", true)
+				}
+				input.Turn = session.demo.turn
+				var err error
+				raw, err = json.Marshal(input)
+				if err != nil {
+					return toolText("故事工具参数格式不正确", true)
+				}
+			}
+		}
+	}
+	if session == nil {
+		return toolText("请先用本次大厅凭据调用 self.call.open 开始故事，再使用返回的 turn_key 接话", true)
+	}
+	oldTurn := session.demo.turn
+	if name == toolCallTurn && input.Turn != oldTurn && input.Turn == session.resume {
+		resume := input.Turn
+		input.marker = input.Turn
+		input.Turn = oldTurn
+		// The marker is internal and must survive the JSON call boundary.
+		result := session.demo.callWithMarker(ctx, name, input)
+		return p.finishPhoneCall(session, oldTurn, resume, name, now, result)
+	}
+	result := session.demo.call(ctx, name, raw)
+	return p.finishPhoneCall(session, oldTurn, oldTurn, name, now, result)
+}
+
+func (p *privateProxy) finishPhoneCall(session *proxyCallSession, oldTurn, resume, name string, now time.Time, result mcpToolResult) mcpToolResult {
+	if result.IsError {
+		return result
+	}
+	session.updated = now
+	if session.resume != "" {
+		delete(p.callTurns, session.resume)
+		session.resume = ""
+	}
+	if oldTurn != session.demo.turn {
+		delete(p.callTurns, oldTurn)
+	}
+	if name == toolCallTurn && result.StructuredContent != nil {
+		session.resume = resume
+		p.callTurns[resume] = session
+	}
+	if session.demo.turn != "" {
+		p.callTurns[session.demo.turn] = session
+	}
+	if session.demo.lobby != "" {
+		p.callSessions[session.demo.lobby] = session
+	}
+	if name == toolCallEnd {
+		delete(p.callSessions, session.demo.lobby)
+		delete(p.callTurns, session.resume)
+	}
+	if match := session.demo.match.Load(); match != nil {
+		p.callDemo.match.Store(match)
+	}
+	return result
+}
+
+func (p *privateProxy) call(ctx context.Context, request rpcMessage) mcpToolResult {
 	p.calls.Add(1)
+	var callEnvelope struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(request.Params, &callEnvelope); err != nil {
+		return toolText("工具请求格式不正确", true)
+	}
+	if p.callDemo != nil && strings.HasPrefix(callEnvelope.Name, "self.call.") {
+		result := p.callPhone(ctx, callEnvelope.Name, callEnvelope.Arguments)
+		var view callDemoView
+		if !result.IsError && len(result.Content) > 0 {
+			if err := json.Unmarshal([]byte(result.Content[0].Text), &view); err != nil {
+				slog.Warn("phone tool result could not be inspected", "tool", callEnvelope.Name)
+			}
+		}
+		p.traceMu.Lock()
+		p.callTrace = append(p.callTrace, callTrace{
+			Tool: callEnvelope.Name, OK: !result.IsError, Status: view.Status,
+		})
+		if len(p.callTrace) > callTraceLimit {
+			p.callTrace = p.callTrace[len(p.callTrace)-callTraceLimit:]
+		}
+		p.traceMu.Unlock()
+		playback := result.StructuredContent != nil
+		if playback {
+			p.replays.Add(1)
+		}
+		slog.Info("private call demo tool", "tool", callEnvelope.Name, "ok", !result.IsError, "original_requested", playback)
+		return result
+	}
+	if strings.HasPrefix(callEnvelope.Name, "self.lobby.") {
+		return p.lobby.callTool(callEnvelope.Name, callEnvelope.Arguments)
+	}
 	var call toolCallParams
 	if err := json.Unmarshal(request.Params, &call); err != nil {
 		return toolText("工具请求格式不正确", true)

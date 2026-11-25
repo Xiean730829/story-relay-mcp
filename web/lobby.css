@@ -1,0 +1,10 @@
+.box-links { display: flex; flex-wrap: wrap; gap: .7rem; margin: 0 0 1.25rem; }
+.box-links a { border: 1px solid currentColor; border-radius: 999px; padding: .45rem .85rem; text-decoration: none; }
+.lobby .intro { padding-bottom: 1rem; }
+.lobby .members, .relay-lines { padding-left: 1.4rem; }
+.lobby .members { display: flex; gap: .45rem 1.25rem; flex-wrap: wrap; }
+.lobby .members:empty, .relay-lines:empty { display: none; }
+.relay-lines { max-height: 25rem; overflow-y: auto; }
+.relay-lines li { margin: .55rem 0; line-height: 1.55; }
+.lobby .game-controls { flex-wrap: wrap; }
+.lobby .settings .full { margin-top: .55rem; }

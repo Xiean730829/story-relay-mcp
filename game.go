@@ -7,27 +7,29 @@ import (
 )
 
 const (
-	toolStart    = "self.story.start"
-	toolContinue = "self.story.continue"
-	toolEnd      = "self.story.end"
-	storyReady   = "ready"
-	storyPlaying = "playing"
-	storyEnded   = "ended"
-	roleChild    = "child"
-	roleAI       = "ai"
-	reasonChild  = "child_stop"
-	reasonAI     = "ai_finish"
-	reasonSilent = "silence"
-	maxSentence  = 400
-	maxTitle     = 40
-	maxLines     = 100
-	fieldTitle   = "title"
-	fieldChild   = "child_sentence"
-	fieldAI      = "ai_sentence"
-	fieldEnding  = "ending"
-	fieldReason  = "reason"
-	schemaObject = "object"
-	schemaString = "string"
+	toolStart     = "self.story.start"
+	toolContinue  = "self.story.continue"
+	toolEnd       = "self.story.end"
+	storyReady    = "ready"
+	storyPlaying  = "playing"
+	storyEnded    = "ended"
+	roleChild     = "child"
+	roleAI        = "ai"
+	reasonChild   = "child_stop"
+	reasonAI      = "ai_finish"
+	reasonSilent  = "silence"
+	maxSentence   = 400
+	maxTitle      = 40
+	maxLines      = 100
+	fieldTitle    = "title"
+	fieldChild    = "child_sentence"
+	fieldAI       = "ai_sentence"
+	fieldEnding   = "ending"
+	fieldReason   = "reason"
+	schemaObject  = "object"
+	schemaString  = "string"
+	schemaBoolean = "boolean"
+	schemaArray   = "array"
 )
 
 type storyLine struct {
@@ -72,10 +74,12 @@ type inputSchema struct {
 }
 
 type schemaProperty struct {
-	Type      string   `json:"type"`
-	MinLength int      `json:"minLength,omitempty"`
-	MaxLength int      `json:"maxLength,omitempty"`
-	Enum      []string `json:"enum,omitempty"`
+	Type      string          `json:"type"`
+	MinLength int             `json:"minLength,omitempty"`
+	MaxLength int             `json:"maxLength,omitempty"`
+	Enum      []string        `json:"enum,omitempty"`
+	Items     *schemaProperty `json:"items,omitempty"`
+	MaxItems  int             `json:"maxItems,omitempty"`
 }
 
 func storyTools() []toolDescription {

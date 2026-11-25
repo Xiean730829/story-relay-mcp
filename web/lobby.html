@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>故事接龙 · 三盒游戏大厅</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/lobby.css">
+</head>
+<body>
+  <main class="lobby">
+    <header><a class="brand" href="/">小星故事屋</a><span class="pill" id="connection">正在连接</span></header>
+    <section class="intro">
+      <h1>一起接故事</h1>
+      <p>打开三台模拟盒子，轮到谁，谁就接一句。</p>
+    </section>
+    <nav class="box-links" aria-label="模拟盒子">
+      <a href="/lobby.html?box=A" target="_blank" rel="noopener">打开盒子 A</a>
+      <a href="/lobby.html?box=B" target="_blank" rel="noopener">打开盒子 B</a>
+      <a href="/lobby.html?box=C" target="_blank" rel="noopener">打开盒子 C</a>
+    </nav>
+    <div class="layout">
+      <section class="game-panel" aria-labelledby="room-title">
+        <div class="book-top"><h2 id="room-title">游戏大厅</h2><span id="room-count" class="pill">0 台盒子</span></div>
+        <p id="turn-status" role="status">说「玩故事接龙」，或者点击加入。</p>
+        <ul id="members" class="members" aria-label="在场盒子"></ul>
+        <ol id="lines" class="relay-lines" aria-label="故事进度"></ol>
+        <div class="game-controls">
+          <button type="button" class="primary" id="record" disabled>开始说话</button>
+          <button type="button" id="stop-play" disabled>本机停播</button>
+          <button type="button" id="use-history" disabled>和历史伙伴玩</button>
+          <button type="button" id="leave" disabled>退出</button>
+          <button type="button" id="end-game" disabled>结束整局</button>
+        </div>
+        <label class="checkbox" for="share-audio"><input type="checkbox" id="share-audio" checked disabled>把这句原声留给以后的伙伴（取消勾选则本句只在本局使用）</label>
+        <form class="text-form" id="text-form">
+          <label class="sr-only" for="sentence">文字接一句</label>
+          <input id="sentence" maxlength="400" placeholder="也可以用文字接一句" disabled>
+          <button id="send-text" disabled>提交文字</button>
+        </form>
+      </section>
+      <aside>
+        <section class="card settings">
+          <h2 id="box-title">这台盒子</h2>
+          <form id="join-form">
+            <label for="topic">故事语境</label>
+            <select id="topic">
+              <option value="森林冒险">森林冒险</option>
+              <option value="海底探险">海底探险</option>
+              <option value="太空旅行">太空旅行</option>
+            </select>
+            <label class="checkbox"><input type="checkbox" id="reuse">三分钟匹配不到伙伴时使用历史原声</label>
+            <button id="join" type="submit" class="primary full" disabled>加入故事接龙</button>
+            <button id="wake" type="button" class="full" hidden>语音唤醒</button>
+          </form>
+          <p id="notice" class="field-help" aria-live="polite">先加入，再用麦克风录一段真实原声。</p>
+          <p id="error" class="error" role="alert" hidden></p>
+        </section>
+        <details class="card debug">
+          <summary>交付记录</summary>
+          <p class="field-help">浏览器模拟 Issue #15 的逐设备播放。每次播放独立记录开始、结束和停播。</p>
+          <ol id="trace" aria-label="交付记录"></ol>
+        </details>
+      </aside>
+    </div>
+    <footer>本地三盒模拟 <span>只有勾选留存的原声会写盘。真机原声下行需灵矽接口联调。</span></footer>
+  </main>
+  <script type="module" src="/lobby.js"></script>
+</body>
+</html>

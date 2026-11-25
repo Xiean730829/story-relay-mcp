@@ -23,7 +23,7 @@ const (
 	mcpHTTPTransport  = 1
 	mcpDocumentURL    = "https://linx.qiniu.com/docs/xrobot/mcp/custom-mcp"
 	mcpLogoURL        = "https://linx.qiniu.com/favicon.ico"
-	mcpDescription    = "由本机运行的私有故事接龙工具，支持开头、续写和结束，经灵矽MCP Proxy接入。"
+	mcpDescription    = "由本机运行的私有故事接龙工具，支持单人接龙、多人大厅匹配和文字回合，经灵矽MCP Proxy接入。"
 )
 
 type privateDeployment struct {
@@ -84,7 +84,8 @@ func startPrivateProxy(ctx context.Context, cfg configuration) (*privateProxy, c
 	); err != nil {
 		return nil, nil, err
 	}
-	if agent.Name != privateAgentName {
+	isDemoAgent := agent.Name == privateAgentName || (cfg.callMode && agent.Name == agentName)
+	if !isDemoAgent {
 		return nil, nil, fmt.Errorf("请选择本演示的专用智能体“%s”，避免修改其他智能体", privateAgentName)
 	}
 	var token struct {
@@ -117,12 +118,27 @@ func startPrivateProxy(ctx context.Context, cfg configuration) (*privateProxy, c
 	}
 	proxy := &privateProxy{
 		endpoint: endpoint.String(), ready: make(chan struct{}), games: map[string]*proxyStory{},
-		watchers: map[string]proxyWatcher{},
-		info:     privateDeployment{Account: account.Username, AgentID: cfg.agent, ExpiresAt: token.ExpiresAt},
+		watchers: map[string]proxyWatcher{}, lobby: cfg.lobby,
+		info: privateDeployment{Account: account.Username, AgentID: cfg.agent, ExpiresAt: token.ExpiresAt},
+	}
+	if cfg.callMode {
+		history := callHistory{api: api, agent: cfg.agent}
+		media, err := newCallMedia(history)
+		if err != nil {
+			return nil, nil, err
+		}
+		demo, err := newCallDemo(history, cfg.dataDir, media.prepare)
+		if err != nil {
+			return nil, nil, err
+		}
+		proxy.callDemo = demo
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	var worker sync.WaitGroup
 	worker.Go(func() { proxy.run(runCtx) })
+	if proxy.callDemo != nil {
+		worker.Go(func() { proxy.callDemo.runArchive(runCtx) })
+	}
 	stop := func() { cancel(); worker.Wait() }
 	readyCtx, stopWait := context.WithTimeout(ctx, requestTimeout)
 	defer stopWait()
@@ -299,10 +315,22 @@ func (p *privateProxy) register(ctx context.Context, api platformAPI, config pri
 	if err != nil {
 		return fmt.Errorf("read private MCP prompt: %w", err)
 	}
+	sections := []string{string(prompt), string(addition)}
+	const saveTextAndAudio = 2
+	historyMode := 0
+	if p.callDemo != nil {
+		callPrompt, err := assets.ReadFile("call-prompt.txt")
+		if err != nil {
+			return fmt.Errorf("read embedded call demo prompt: %w", err)
+		}
+		sections = []string{string(callPrompt)}
+		historyMode = saveTextAndAudio
+	}
 	update := struct {
-		Prompt string `json:"systemPrompt"`
-		Intent string `json:"intentModelId"`
-	}{Prompt: strings.Join([]string{string(prompt), string(addition)}, "\n"), Intent: intentFunction}
+		Prompt          string `json:"systemPrompt"`
+		Intent          string `json:"intentModelId"`
+		ChatHistoryConf int    `json:"chatHistoryConf,omitempty"`
+	}{Prompt: strings.Join(sections, "\n"), Intent: intentFunction, ChatHistoryConf: historyMode}
 	return api.request(
 		ctx,
 		http.MethodPut,

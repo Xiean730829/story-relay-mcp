@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +22,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-//go:embed web/* prompt.txt proxy-prompt.txt
+//go:embed web/* prompt.txt proxy-prompt.txt call-prompt.txt
 var assets embed.FS
 
 const (
@@ -41,6 +42,9 @@ type configuration struct {
 	addr, api, ws, ota, key, agent string
 	mode                           string
 	proxy                          *privateProxy
+	lobby                          *lobby
+	callMode                       bool
+	dataDir                        string
 }
 
 type apiResponse struct {
@@ -63,7 +67,7 @@ func run() error {
 	cfg := configuration{
 		addr: envOr("STORY_ADDR", defaultAddr), api: envOr("LINX_API_BASE", defaultAPI),
 		ws: envOr("LINX_WS_URL", defaultWS), key: os.Getenv("LINX_API_KEY"), agent: os.Getenv("LINX_AGENT_ID"),
-		mode: envOr("STORY_MCP_MODE", modeDevice),
+		mode: envOr("STORY_MCP_MODE", modeDevice), callMode: os.Getenv("STORY_CALL_DEMO") == "1",
 	}
 	cfg.ota = envOr("LINX_OTA_URL", strings.TrimRight(cfg.api, "/")+defaultOTAPath)
 	host, _, err := net.SplitHostPort(cfg.addr)
@@ -82,6 +86,20 @@ func run() error {
 			slog.Debug("close local listener", "error", err)
 		}
 	}()
+	dataDir := os.Getenv("STORY_LOBBY_DATA")
+	if dataDir == "" {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return fmt.Errorf("resolve lobby voice storage: %w", err)
+		}
+		dataDir = filepath.Join(cacheDir, "story-relay-mcp")
+	}
+	cfg.dataDir = dataDir
+	pool, err := openLobbyPool(dataDir)
+	if err != nil {
+		return err
+	}
+	cfg.lobby = newLobby(pool)
 	if cfg.mode == modeProxy {
 		proxy, stopProxy, err := startPrivateProxy(ctx, cfg)
 		if err != nil {
@@ -114,17 +132,31 @@ func run() error {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		data := struct {
-			HasKey     bool               `json:"has_key"`
-			AgentID    string             `json:"agent_id"`
-			Mode       string             `json:"mcp_mode"`
-			Online     bool               `json:"proxy_online"`
-			Deployment *privateDeployment `json:"deployment,omitempty"`
-			Calls      uint64             `json:"proxy_calls"`
-			Linked     int                `json:"linked_stories"`
+			HasKey           bool               `json:"has_key"`
+			AgentID          string             `json:"agent_id"`
+			Mode             string             `json:"mcp_mode"`
+			Online           bool               `json:"proxy_online"`
+			Deployment       *privateDeployment `json:"deployment,omitempty"`
+			Calls            uint64             `json:"proxy_calls"`
+			Linked           int                `json:"linked_stories"`
+			CallDemo         bool               `json:"single_call_demo"`
+			Replays          uint64             `json:"original_playback_requests"`
+			CallMatch        *callMatchStatus   `json:"call_match,omitempty"`
+			CallTrace        []callTrace        `json:"call_trace,omitempty"`
+			CallAudioReady   int                `json:"call_audio_ready"`
+			CallAudioPending int                `json:"call_audio_pending"`
 		}{HasKey: cfg.key != "", AgentID: cfg.agent, Mode: cfg.mode}
 		if cfg.proxy != nil {
 			data.Deployment, data.Online = &cfg.proxy.info, cfg.proxy.online.Load()
 			data.Calls, data.Linked = cfg.proxy.calls.Load(), cfg.proxy.linkedStories()
+			data.CallDemo, data.Replays = cfg.proxy.callDemo != nil, cfg.proxy.replays.Load()
+			if cfg.proxy.callDemo != nil {
+				data.CallMatch = cfg.proxy.callDemo.match.Load()
+				data.CallAudioReady, data.CallAudioPending = cfg.proxy.callDemo.pool.counts()
+				cfg.proxy.traceMu.Lock()
+				data.CallTrace = append([]callTrace{}, cfg.proxy.callTrace...)
+				cfg.proxy.traceMu.Unlock()
+			}
 		}
 		if err := json.NewEncoder(w).Encode(apiResponse{Msg: "success", ReqID: rand.Text(), Data: data}); err != nil {
 			slog.DebugContext(r.Context(), "write status response", "error", err)
@@ -134,6 +166,9 @@ func run() error {
 		u, err := url.Parse(r.Header.Get("Origin"))
 		return err == nil && u.Scheme == "http" && u.Host == r.Host
 	}}
+	mux.HandleFunc("GET /lobby/ws", func(w http.ResponseWriter, r *http.Request) {
+		cfg.lobby.socket(upgrader, w, r)
+	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
