@@ -132,27 +132,34 @@ func run() error {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		data := struct {
-			HasKey           bool               `json:"has_key"`
-			AgentID          string             `json:"agent_id"`
-			Mode             string             `json:"mcp_mode"`
-			Online           bool               `json:"proxy_online"`
-			Deployment       *privateDeployment `json:"deployment,omitempty"`
-			Calls            uint64             `json:"proxy_calls"`
-			Linked           int                `json:"linked_stories"`
-			CallDemo         bool               `json:"single_call_demo"`
-			Replays          uint64             `json:"original_playback_requests"`
-			CallMatch        *callMatchStatus   `json:"call_match,omitempty"`
-			CallTrace        []callTrace        `json:"call_trace,omitempty"`
-			CallAudioReady   int                `json:"call_audio_ready"`
-			CallAudioPending int                `json:"call_audio_pending"`
+			HasKey           bool                       `json:"has_key"`
+			AgentID          string                     `json:"agent_id"`
+			Mode             string                     `json:"mcp_mode"`
+			Online           bool                       `json:"proxy_online"`
+			Deployment       *privateDeployment         `json:"deployment,omitempty"`
+			Calls            uint64                     `json:"proxy_calls"`
+			Linked           int                        `json:"linked_stories"`
+			CallDemo         bool                       `json:"single_call_demo"`
+			ChainDemo        bool                       `json:"story_chain_demo"`
+			ChainPending     int                        `json:"story_chain_pending"`
+			Replays          uint64                     `json:"original_playback_requests"`
+			CallMatch        *callMatchStatus           `json:"call_match,omitempty"`
+			CallTrace        []callTrace                `json:"call_trace,omitempty"`
+			CallAudioReady   int                        `json:"call_audio_ready"`
+			CallAudioPending int                        `json:"call_audio_pending"`
+			CallAudioByTitle map[string]callAudioCounts `json:"call_audio_by_title,omitempty"`
 		}{HasKey: cfg.key != "", AgentID: cfg.agent, Mode: cfg.mode}
 		if cfg.proxy != nil {
 			data.Deployment, data.Online = &cfg.proxy.info, cfg.proxy.online.Load()
 			data.Calls, data.Linked = cfg.proxy.calls.Load(), cfg.proxy.linkedStories()
 			data.CallDemo, data.Replays = cfg.proxy.callDemo != nil, cfg.proxy.replays.Load()
 			if cfg.proxy.callDemo != nil {
+				data.ChainDemo = cfg.proxy.callDemo.chain != nil
+				data.ChainPending = cfg.proxy.callDemo.pool.pendingChains()
 				data.CallMatch = cfg.proxy.callDemo.match.Load()
-				data.CallAudioReady, data.CallAudioPending = cfg.proxy.callDemo.pool.counts()
+				counts, byTitle := cfg.proxy.callDemo.pool.counts()
+				data.CallAudioReady, data.CallAudioPending = counts.Ready, counts.Pending
+				data.CallAudioByTitle = byTitle
 				cfg.proxy.traceMu.Lock()
 				data.CallTrace = append([]callTrace{}, cfg.proxy.callTrace...)
 				cfg.proxy.traceMu.Unlock()
@@ -168,6 +175,9 @@ func run() error {
 	}}
 	mux.HandleFunc("GET /lobby/ws", func(w http.ResponseWriter, r *http.Request) {
 		cfg.lobby.socket(upgrader, w, r)
+	})
+	mux.HandleFunc("GET /mock-linx/ws", func(w http.ResponseWriter, r *http.Request) {
+		cfg.lobby.mockLinxSocket(upgrader, w, r)
 	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)

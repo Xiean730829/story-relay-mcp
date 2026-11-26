@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -130,6 +131,11 @@ func startPrivateProxy(ctx context.Context, cfg configuration) (*privateProxy, c
 		demo, err := newCallDemo(history, cfg.dataDir, media.prepare)
 		if err != nil {
 			return nil, nil, err
+		}
+		demo.preparePlayback = media.preparePlayback
+		if os.Getenv("STORY_CHAIN_DEMO") == "1" {
+			demo.chain = newCallChain(envOr("STORY_GAME_PLATFORM", callChainDefaultURL))
+			demo.prepareChain = media.prepareStoryPlayback
 		}
 		proxy.callDemo = demo
 	}

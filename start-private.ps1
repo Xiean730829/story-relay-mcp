@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AgentId,
     [switch]$CallDemo,
     [string]$FFmpegPath
@@ -10,7 +10,7 @@ if (-not $AgentId) {
 }
 $storySecret = Read-Host '请输入灵矽 API Key（输入不会显示）' -AsSecureString
 $storySavedEnvironment = @{}
-$storyEnvironmentNames = @('LINX_API_KEY', 'LINX_AGENT_ID', 'STORY_MCP_MODE', 'STORY_CALL_DEMO', 'STORY_CALL_FFMPEG', 'STORY_ADDR', 'GOCACHE', 'GOTMPDIR')
+$storyEnvironmentNames = @('LINX_API_KEY', 'LINX_AGENT_ID', 'STORY_MCP_MODE', 'STORY_CALL_DEMO', 'STORY_CHAIN_DEMO', 'STORY_GAME_PLATFORM', 'STORY_CALL_FFMPEG', 'STORY_ADDR', 'GOCACHE', 'GOTMPDIR')
 foreach ($storyEnvironmentName in $storyEnvironmentNames) {
     $storySavedEnvironment[$storyEnvironmentName] = [Environment]::GetEnvironmentVariable($storyEnvironmentName, 'Process')
 }
@@ -21,6 +21,8 @@ try {
     $env:STORY_MCP_MODE = 'proxy'
     if ($CallDemo) {
         $env:STORY_CALL_DEMO = '1'
+        $env:STORY_CHAIN_DEMO = '1'
+        if (-not $env:STORY_GAME_PLATFORM) { $env:STORY_GAME_PLATFORM = 'http://127.0.0.1:18789' }
         if ($FFmpegPath) { $env:STORY_CALL_FFMPEG = $FFmpegPath }
         if (-not $env:STORY_ADDR) { $env:STORY_ADDR = '127.0.0.1:8788' }
     }

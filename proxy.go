@@ -49,9 +49,10 @@ type proxyCallSession struct {
 }
 
 type callTrace struct {
-	Tool   string `json:"tool"`
-	OK     bool   `json:"ok"`
-	Status string `json:"status,omitempty"`
+	Tool       string `json:"tool"`
+	OK         bool   `json:"ok"`
+	Status     string `json:"status,omitempty"`
+	UseHistory *bool  `json:"use_history,omitempty"`
 }
 
 type privateProxy struct {
@@ -89,6 +90,15 @@ func (p *privateProxy) tools() []toolDescription {
 	}
 	if p.callDemo != nil {
 		phoneTools := callDemoTools()
+		if p.callDemo.chain != nil {
+			filtered := make([]toolDescription, 0, len(phoneTools))
+			for _, tool := range phoneTools {
+				if tool.Name != toolCallReply {
+					filtered = append(filtered, tool)
+				}
+			}
+			return filtered
+		}
 		phoneTools = append(phoneTools, lobbyTools()...)
 		return append(phoneTools, tools...)
 	}
@@ -227,6 +237,14 @@ func (p *privateProxy) callPhone(ctx context.Context, name string, raw json.RawM
 			return toolText("故事工具参数格式不正确", true)
 		}
 	}
+	if name == toolCallLobby {
+		var choice struct {
+			UseHistory *bool `json:"use_history"`
+		}
+		if err := json.Unmarshal(raw, &choice); err != nil || choice.UseHistory == nil {
+			return toolText("请根据孩子的选择明确传入 use_history：以前的伙伴为 true，否则为 false", true)
+		}
+	}
 	p.callMu.Lock()
 	defer p.callMu.Unlock()
 
@@ -245,13 +263,22 @@ func (p *privateProxy) callPhone(ctx context.Context, name string, raw json.RawM
 
 	var session *proxyCallSession
 	switch name {
+	case toolCallEntry:
+		session = &proxyCallSession{demo: &callDemo{
+			history: p.callDemo.history, prepare: p.callDemo.prepare, preparePlayback: p.callDemo.preparePlayback, pool: p.callDemo.pool,
+			chain: p.callDemo.chain, prepareChain: p.callDemo.prepareChain,
+		}}
 	case toolCallLobby:
 		if input.Lobby != "" {
 			session = p.callSessions[input.Lobby]
 			break
 		}
+		if p.callDemo.chain != nil {
+			return toolText("请先调用 self.call.entry 询问两种玩法，再使用返回的 lobby_ticket。", true)
+		}
 		session = &proxyCallSession{demo: &callDemo{
-			history: p.callDemo.history, prepare: p.callDemo.prepare, pool: p.callDemo.pool,
+			history: p.callDemo.history, prepare: p.callDemo.prepare, preparePlayback: p.callDemo.preparePlayback, pool: p.callDemo.pool,
+			chain: p.callDemo.chain, prepareChain: p.callDemo.prepareChain,
 		}}
 	case toolCallOpen:
 		session = p.callSessions[input.Lobby]
@@ -293,6 +320,7 @@ func (p *privateProxy) finishPhoneCall(session *proxyCallSession, oldTurn, resum
 		return result
 	}
 	session.updated = now
+	previousResume := session.resume
 	if session.resume != "" {
 		delete(p.callTurns, session.resume)
 		session.resume = ""
@@ -303,6 +331,17 @@ func (p *privateProxy) finishPhoneCall(session *proxyCallSession, oldTurn, resum
 	if name == toolCallTurn && result.StructuredContent != nil {
 		session.resume = resume
 		p.callTurns[resume] = session
+	}
+	if name == toolCallTurn && result.StructuredContent == nil && len(result.Content) > 0 {
+		var view callDemoView
+		if json.Unmarshal([]byte(result.Content[0].Text), &view) == nil && view.Status == callChoosePeer {
+			session.resume = oldTurn
+			p.callTurns[oldTurn] = session
+		}
+	}
+	if name == toolCallReply && result.StructuredContent != nil && previousResume != "" {
+		session.resume = previousResume
+		p.callTurns[previousResume] = session
 	}
 	if session.demo.turn != "" {
 		p.callTurns[session.demo.turn] = session
@@ -337,10 +376,17 @@ func (p *privateProxy) call(ctx context.Context, request rpcMessage) mcpToolResu
 				slog.Warn("phone tool result could not be inspected", "tool", callEnvelope.Name)
 			}
 		}
+		trace := callTrace{Tool: callEnvelope.Name, OK: !result.IsError, Status: view.Status}
+		if callEnvelope.Name == toolCallLobby {
+			var choice struct {
+				UseHistory *bool `json:"use_history"`
+			}
+			if err := json.Unmarshal(callEnvelope.Arguments, &choice); err == nil {
+				trace.UseHistory = choice.UseHistory
+			}
+		}
 		p.traceMu.Lock()
-		p.callTrace = append(p.callTrace, callTrace{
-			Tool: callEnvelope.Name, OK: !result.IsError, Status: view.Status,
-		})
+		p.callTrace = append(p.callTrace, trace)
 		if len(p.callTrace) > callTraceLimit {
 			p.callTrace = p.callTrace[len(p.callTrace)-callTraceLimit:]
 		}

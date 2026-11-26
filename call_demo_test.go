@@ -10,6 +10,115 @@ import (
 	"testing"
 )
 
+func TestExperimentalSilentChainFollowsPlayback(t *testing.T) {
+	t.Setenv("STORY_CALL_SILENT_CHAIN_TEST", "1")
+	result := callDemoResult(callDemoView{Status: callPeerTurn}, "https://example.com/voice.mp3")
+	content, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatal("missing playback actions")
+	}
+	actions, ok := content["funcs"].([]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("unexpected actions: %+v", content["funcs"])
+	}
+	first := actions[0].(map[string]any)
+	second := actions[1].(map[string]any)
+	if first["name"] != "linx_play" || second["name"] != "change_role" {
+		t.Fatalf("unexpected action order: %+v", actions)
+	}
+}
+
+func TestPhonePlaybackUsesSingleLinxPlayAction(t *testing.T) {
+	t.Setenv("STORY_CALL_SILENT_CHAIN_TEST", "")
+	result := callDemoResult(callDemoView{Status: callPeerTurn}, "https://example.com/voice.mp3")
+	content, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatal("missing playback action")
+	}
+	actions, ok := content["funcs"].([]any)
+	if !ok || len(actions) != 1 {
+		t.Fatalf("expected only the audio playback action, got %+v", content["funcs"])
+	}
+	play, ok := actions[0].(map[string]any)
+	if !ok || play["name"] != playCallAudio {
+		t.Fatalf("expected linx_play, got %+v", actions[0])
+	}
+}
+
+func TestPhoneLobbyRequiresExplicitHistoryChoice(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		args      string
+		wantError bool
+	}{
+		{name: "missing choice", args: `{}`, wantError: true},
+		{name: "no history", args: `{"use_history":false}`},
+		{name: "history requested", args: `{"use_history":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			demo, err := newCallDemo(callHistory{agent: "demo-agent"}, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy := &privateProxy{callDemo: demo}
+			result := proxy.callPhone(t.Context(), toolCallLobby, json.RawMessage(tc.args))
+			if result.IsError != tc.wantError {
+				t.Fatalf("lobby result = %+v, want error %v", result, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestPhoneModeSwitchKeepsStoryAndEnablesHistorySearch(t *testing.T) {
+	t.Parallel()
+	demo, err := newCallDemo(callHistory{agent: "demo-agent"}, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := demo.pool.save(callVoice{
+		Turn: "old-voice", Story: "old-game", Title: defaultCallStoryTitle,
+		Before: "小兔子走到旧木桥。", Text: "小熊搬来了一块木板。",
+		URL: "https://audio.example/old.mp3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxy := &privateProxy{callDemo: demo}
+	call := func(name string, input callDemoInputs) callDemoView {
+		t.Helper()
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := proxy.callPhone(t.Context(), name, raw)
+		if result.IsError {
+			t.Fatalf("%s failed: %+v", name, result.Content)
+		}
+		var view callDemoView
+		if err := json.Unmarshal([]byte(result.Content[0].Text), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	lobby := call(toolCallLobby, callDemoInputs{UseHistory: false})
+	if lobby.Mode != callModeBuddy {
+		t.Fatalf("unexpected initial mode: %+v", lobby)
+	}
+	opened := call(toolCallOpen, callDemoInputs{Lobby: lobby.Lobby, Title: defaultCallStoryTitle})
+	switched := call(toolCallLobby, callDemoInputs{Lobby: lobby.Lobby, UseHistory: true})
+	if switched.Mode != callModeHistory || switched.Turn != opened.Turn || switched.Status != callGameActive {
+		t.Fatalf("mode switch did not preserve the story: %+v", switched)
+	}
+	turn := call(toolCallTurn, callDemoInputs{
+		Lobby: lobby.Lobby, Turn: opened.Turn, Child: "旧木桥缺了一块板，怎么办？", AI: "小兔子去找一块木板。",
+	})
+	if turn.Status != callChoosePeer || len(turn.Candidates) != 1 || turn.Candidates[0].ID != "old-voice" {
+		t.Fatalf("history mode did not offer the archived recording: %+v", turn)
+	}
+}
+
 func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 	t.Parallel()
 	const (
@@ -18,10 +127,11 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 		spoken  = "熊看见口袋里有一朵会说话的云"
 		media   = "https://audio.example/private/original.wav"
 	)
-	var playable, signed string
+	var playable, delayed, signed string
 	lastTurn := ""
 	signCalls := 0
 	mediaReads := 0
+	playbackPrepares := 0
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var data any
 		switch r.URL.Path {
@@ -37,12 +147,12 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 			var request struct {
 				URL string `json:"url"`
 			}
-			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&request) != nil || request.URL != playable {
+			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&request) != nil || request.URL != delayed {
 				t.Errorf("wrong recording signature request: %+v", request)
 			}
 			signCalls++
 			data = map[string]string{"signed_url": signed}
-		case "/private/original.mp3":
+		case "/private/delayed.mp3":
 			mediaReads++
 			if r.Header.Get("Range") != "bytes=0-2" || r.URL.Query().Get("signed") != "fixture" {
 				t.Error("player preflight did not use the signed media range")
@@ -64,7 +174,8 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	playable = server.URL + "/private/original.mp3"
-	signed = playable + "?signed=fixture"
+	delayed = server.URL + "/private/delayed.mp3"
+	signed = delayed + "?signed=fixture"
 	history := callHistory{api: platformAPI{cfg: configuration{api: server.URL}, http: server.Client()}, agent: agentID}
 	root := t.TempDir()
 	prepare := func(_ context.Context, ref callVoice) (string, error) {
@@ -107,21 +218,34 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 	if next.Status != callBuddyTurn || next.Capture != lastTurn || next.Turn == first.Turn {
 		t.Fatalf("turn did not record a pending index: %+v", next)
 	}
+	if err := demo.archiveVoice(t.Context(), demo.pool.voices[lastTurn]); err != nil {
+		t.Fatal(err)
+	}
 	call(toolCallEnd, callDemoInputs{Turn: next.Turn, Ending: "下一次见。"})
 	demo, err = newCallDemo(history, root, prepare)
 	if err != nil {
 		t.Fatal(err)
 	}
+	demo.preparePlayback = func(_ context.Context, ref callVoice) (string, error) {
+		if ref.URL != playable {
+			t.Fatalf("wrong audio for playback preparation: %+v", ref)
+		}
+		playbackPrepares++
+		return delayed, nil
+	}
 	newLobby, _ := call(toolCallLobby, callDemoInputs{UseHistory: true})
 	second, opened := call(toolCallOpen, callDemoInputs{Lobby: newLobby.Lobby, Title: title, AI: "小熊想了想。"})
-	if second.Status != callBuddyTurn || opened.StructuredContent != nil || second.Sentence != "从前有一只熊。" {
+	if second.Status != callBuddyTurn || opened.StructuredContent != nil || second.Sentence != first.Sentence {
 		t.Fatalf("starting a new game should wait for the player's line: %+v", second)
 	}
 	selection, pending := call(toolCallTurn, callDemoInputs{
-		Turn: second.Turn, Child: "小熊伸手摸了摸口袋。", AI: "它在找自己的钥匙。",
+		Turn: second.Turn, Child: "口袋里有什么？", AI: "它在找自己的钥匙。",
 	})
 	if selection.Status != callChoosePeer || pending.StructuredContent != nil || len(selection.Candidates) != 1 {
 		t.Fatalf("player's line did not trigger a search of older games: %+v", selection)
+	}
+	if len(selection.Scene) < 2 || selection.Scene[len(selection.Scene)-1].Text != "口袋里有什么？" || selection.Scene[0].Text != first.Sentence {
+		t.Fatalf("Buddy did not receive the current story and child line: %+v", selection.Scene)
 	}
 	if selection.NextAction == "" || !strings.HasPrefix(pending.Content[0].Text, `{"status":"choose_peer"`) {
 		t.Fatalf("candidate response did not give an immediate next action: %s", pending.Content[0].Text)
@@ -130,14 +254,20 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 		t.Fatalf("missing candidate search diagnostics: %+v", match)
 	}
 	voice := selection.Candidates[0]
-	if voice.Text != spoken || voice.ID != lastTurn || voice.Before != "从前有一只熊。" {
+	if voice.Text != spoken || voice.ID != lastTurn || voice.Before != first.Sentence {
 		t.Fatalf("wrong reply candidate: %+v", voice)
 	}
-	peer, replay := call(toolCallReply, callDemoInputs{Turn: selection.Turn, Eligible: []string{voice.ID}})
+	if result := demo.callWithMarker(t.Context(), toolCallReply, callDemoInputs{
+		Turn: selection.Turn, Eligible: []string{voice.ID},
+	}); !result.IsError || result.StructuredContent != nil {
+		t.Fatalf("a selection without a reason must not trigger playback: %+v", result)
+	}
+	peer, replay := call(toolCallReply, callDemoInputs{Turn: selection.Turn, Eligible: []string{voice.ID}, Reason: "回应口袋里有什么"})
 	if peer.Status != callPeerTurn || peer.Turn != selection.Turn || peer.Sentence != "" {
 		t.Fatalf("original audio did not take the Buddy's place for this turn: %+v", peer)
 	}
-	if match := demo.match.Load(); match.Phase != callPeerRequested || match.Eligible != 1 {
+	if match := demo.match.Load(); match.Phase != callPeerRequested || match.Eligible != 1 ||
+		match.Current != "口袋里有什么？" || match.Selected != spoken || match.Reason != "回应口袋里有什么" {
 		t.Fatalf("missing peer audio request diagnostics: %+v", match)
 	}
 	raw, err := json.Marshal(replay)
@@ -152,6 +282,13 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 	}
 	if strings.Contains(replay.Content[0].Text, signed) || signCalls != 1 || mediaReads != 1 {
 		t.Fatal("signed audio should be given to the player only")
+	}
+	archived := demo.pool.voices[lastTurn]
+	if archived.URL != playable || archived.PlaybackURL != delayed {
+		t.Fatalf("original and delayed audio were not saved separately: %+v", archived)
+	}
+	if _, phase := demo.signPeer(t.Context(), archived); phase != callPeerRequested || playbackPrepares != 1 {
+		t.Fatalf("cached playback was not reused: phase=%v prepares=%d", phase, playbackPrepares)
 	}
 	continued, _ := call(toolCallTurn, callDemoInputs{
 		Turn: peer.Turn, Child: "熊问云要去哪里。", AI: "云说去看海。",
@@ -173,14 +310,12 @@ func TestCallDemoUsesHistoricalVoiceAsAReplyInAnotherGame(t *testing.T) {
 		t.Fatalf("unrelated topic produced unrelated candidates: %+v", unrelated)
 	}
 	closeLobby, _ := call(toolCallLobby, callDemoInputs{UseHistory: true})
-	closeStory, _ := call(toolCallOpen, callDemoInputs{
-		Lobby: closeLobby.Lobby, Title: "山洞探险", AI: "那天，天特别暗。",
-	})
+	closeStory, _ := call(toolCallOpen, callDemoInputs{Lobby: closeLobby.Lobby, Title: title})
 	related, _ := call(toolCallTurn, callDemoInputs{
-		Turn: closeStory.Turn, Child: "从前有一只熊。", AI: "它住在山洞。",
+		Turn: closeStory.Turn, Child: "口袋里有什么呀？", AI: "它住在山洞。",
 	})
 	if related.Status != callChoosePeer || len(related.Candidates) == 0 {
-		t.Fatalf("related context under a different title did not find a candidate: %+v", related)
+		t.Fatalf("related context under the same title did not find a candidate: %+v", related)
 	}
 	fallback, refused := call(toolCallReply, callDemoInputs{Turn: related.Turn, Eligible: []string{}})
 	if fallback.Status != callBuddyTurn || fallback.Sentence != "它住在山洞。" || refused.StructuredContent != nil {
@@ -322,7 +457,7 @@ func TestCallArchiveStoresAudioBeforeReuse(t *testing.T) {
 	}
 }
 
-func TestPhoneAutomaticallyPlaysAndAcceptsPreviousTurnAfterAction(t *testing.T) {
+func TestPhoneBuddySelectsRecordingAndAcceptsPreviousTurnAfterAction(t *testing.T) {
 	t.Parallel()
 	var signed string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -368,11 +503,17 @@ func TestPhoneAutomaticallyPlaysAndAcceptsPreviousTurnAfterAction(t *testing.T) 
 	}
 	lobby, _ := call(toolCallLobby, callDemoInputs{UseHistory: true})
 	opened, _ := call(toolCallOpen, callDemoInputs{Lobby: lobby.Lobby, Title: "兔子", AI: "森林里有只兔子。"})
-	peer, result := call(toolCallTurn, callDemoInputs{
+	selection, result := call(toolCallTurn, callDemoInputs{
 		Lobby: lobby.Lobby, Turn: opened.Turn, Child: "小兔子最喜欢什么？", AI: "小兔子最爱吃胡萝卜蛋糕。",
 	})
+	if selection.Status != callChoosePeer || result.StructuredContent != nil || len(selection.Candidates) != 1 {
+		t.Fatalf("even an exact match must be offered for Buddy to select: %+v", selection)
+	}
+	peer, result := call(toolCallReply, callDemoInputs{
+		Turn: selection.Turn, Eligible: []string{selection.Candidates[0].ID}, Reason: "回答兔子喜欢什么",
+	})
 	if peer.Status != callPeerTurn || result.StructuredContent == nil {
-		t.Fatalf("matching original was not sent in the same call: %+v", peer)
+		t.Fatalf("Buddy's selected recording did not produce a playback action: %+v", peer)
 	}
 	// Linx may consume the action without forwarding the new turn key to the model.
 	continued, _ := call(toolCallTurn, callDemoInputs{

@@ -6,44 +6,84 @@ import (
 	"testing"
 )
 
-func TestCallPoolRanksRelatedReplyAcrossStoryTitles(t *testing.T) {
+func TestCallPoolMatchesWithinTitleAndScene(t *testing.T) {
 	t.Parallel()
 
-	pool := &callPool{dir: t.TempDir(), voices: map[string]callVoice{
-		"rabbit": {
-			Turn: "rabbit", Story: "previous", Title: "兔子和胡萝卜",
-			Before: "森林里住着一只小兔子，它有一片胡萝卜田。",
-			Text:   "小兔子最爱吃胡萝卜蛋糕。",
-		},
-		"forest1": {Turn: "forest1", Story: "older1", Title: "森林冒险", Text: "星星说了什么？"},
-		"forest2": {Turn: "forest2", Story: "older2", Title: "森林冒险", Text: "松鼠发现了松果。"},
-		"forest3": {Turn: "forest3", Story: "older3", Title: "森林冒险", Text: "树上有一盏灯。"},
-		"forest4": {Turn: "forest4", Story: "older4", Title: "森林冒险", Text: "下起了一场雨。"},
-	}}
-	current := callVoice{Story: "current", Title: "森林冒险", Text: "小兔子最喜欢什么？"}
-	candidates, err := pool.candidates(current, map[string]bool{})
+	pool, err := openCallPool(t.TempDir(), "agent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) == 0 || candidates[0].Turn != "rabbit" {
-		t.Fatalf("related answer did not rank ahead of unrelated same-title clips: %+v", candidates)
+	const ready = "https://audio.example/recording.mp3"
+	clips := []callVoice{
+		{Turn: "boot", Story: "old", Title: "森林探险", Text: "地图背面画了一只红靴子。", URL: ready},
+		{Turn: "footprint", Story: "old", Title: defaultCallStoryTitle, Before: "地图反面画了什么？", Text: "上面有一串泥脚印。", URL: ready},
+		{Turn: "dark", Story: "old", Title: defaultCallStoryTitle, Before: "林子里为什么这么暗？", Text: "一片乌云挡住了月亮。", URL: ready},
+		{Turn: "unrelated", Story: "old", Title: defaultCallStoryTitle, Text: "小松鼠把星星放进口袋。", URL: ready},
+		{Turn: "wrong-scene", Story: "old", Title: defaultCallStoryTitle, Before: "地图背面写了什么？", Text: "因为天黑，树林里一点光也没有。", URL: ready},
+		{Turn: "echo-question", Story: "old", Title: defaultCallStoryTitle, Text: "地图的反面画着什么呢", URL: ready},
+		{Turn: "mode-switch", Story: "old", Title: defaultCallStoryTitle, Before: "地图反面画了什么？", Text: "我要跟以前的朋友一起玩。", URL: ready},
+		{Turn: "pending", Story: "old", Title: defaultCallStoryTitle, Text: "地图背面画着木桥。"},
+		{Turn: "other-preset", Story: "old", Title: "双熊护林队", Text: "地图背面画了一只红靴子。", URL: ready},
+		{Turn: "other-title", Story: "old", Title: "自定义故事", Text: "地图背面画了一只红靴子。", URL: ready},
+	}
+	for _, clip := range clips {
+		if err := pool.save(clip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := callVoice{Story: "current", Title: defaultCallStoryTitle, Text: "地图背后有什么？"}
+	got := pool.candidates(current, map[string]bool{"boot": true}, nil)
+	seen := map[string]bool{}
+	for _, clip := range got {
+		seen[clip.Turn] = true
+	}
+	if !seen["footprint"] || !seen["dark"] {
+		t.Fatalf("the Buddy needs differently worded same-story candidates: %+v", got)
+	}
+	for _, forbidden := range []string{"boot", "mode-switch", "pending", "other-preset", "other-title"} {
+		if seen[forbidden] {
+			t.Fatalf("candidate %s should not be exposed: %+v", forbidden, got)
+		}
 	}
 }
 
-func TestAutomaticCallReplies(t *testing.T) {
+func TestCallPoolIndexesNewTitlesAndRebuildsOnRestart(t *testing.T) {
 	t.Parallel()
-	candidates := []callVoice{
-		{Turn: "answer", Text: "小兔子最爱吃胡萝卜蛋糕", URL: "stored"},
-		{Turn: "opposite", Text: "小兔子不爱吃胡萝卜蛋糕", URL: "stored"},
-		{Turn: "question", Text: "小兔子最爱吃胡萝卜蛋糕吗？", URL: "stored"},
-		{Turn: "missing", Text: "小兔子最爱吃胡萝卜蛋糕"},
+
+	root := t.TempDir()
+	pool, err := openCallPool(root, "agent")
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := automaticCallReplies(candidates, "小兔子最爱吃胡萝卜蛋糕。")
-	if len(got) != 1 || got[0] != "answer" {
-		t.Fatalf("unexpected automatic matches: %v", got)
+	const title = "山谷救援"
+	voice := callVoice{
+		Turn: "sled", Story: "old", Title: title, Before: "雪橇卡住了。",
+		Text: "雪橇卡住了，小松鼠把它推了出来。",
 	}
-	if got := automaticCallReplies(candidates, "小兔子喜欢什么？"); len(got) != 0 {
-		t.Fatalf("a question was treated as an answer: %v", got)
+	if err := pool.save(voice); err != nil {
+		t.Fatal(err)
+	}
+	current := callVoice{Story: "new", Title: title, Text: "雪橇卡住了怎么办？"}
+	if got := pool.candidates(current, nil, nil); len(got) != 0 {
+		t.Fatalf("pending clip was indexed: %+v", got)
+	}
+	voice.URL = "https://audio.example/sled.mp3"
+	if err := pool.save(voice); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.candidates(current, nil, nil); len(got) != 1 || got[0].Turn != voice.Turn {
+		t.Fatalf("archive completion did not update the index: %+v", got)
+	}
+	pool, err = openCallPool(root, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.candidates(current, nil, nil); len(got) != 1 || got[0].Turn != voice.Turn {
+		t.Fatalf("reopen did not rebuild the title index: %+v", got)
+	}
+	current.Title = "另一个山谷故事"
+	if got := pool.candidates(current, nil, nil); len(got) != 0 {
+		t.Fatalf("another custom title saw the archive: %+v", got)
 	}
 }
 
@@ -73,14 +113,11 @@ func TestCallPoolReadsDuringArchive(t *testing.T) {
 	})
 	workers.Go(func() {
 		for range 20 {
-			_, err := pool.candidates(
+			pool.candidates(
 				callVoice{Story: "new", Title: "森林冒险", Text: "兔子喜欢什么？"},
 				map[string]bool{},
+				nil,
 			)
-			if err != nil {
-				errors <- err
-				return
-			}
 			pool.opening("森林冒险")
 			pool.unresolved()
 		}

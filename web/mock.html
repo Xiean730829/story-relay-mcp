@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>模拟伙伴 · 游戏大厅</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/lobby.css">
+</head>
+<body>
+  <main class="lobby">
+    <header><a class="brand" href="/">小星故事屋</a><span class="pill" id="connection">正在连接</span></header>
+    <section class="intro">
+      <h1>模拟伙伴一起玩</h1>
+      <p>用三个页面模拟三个孩子和各自的 Buddy。文字代表模拟的语音识别；录音与播放是真实音频。</p>
+    </section>
+    <nav class="box-links" aria-label="模拟伙伴">
+      <a href="/mock.html?box=A" target="_blank" rel="noopener">打开伙伴 A</a>
+      <a href="/mock.html?box=B" target="_blank" rel="noopener">打开伙伴 B</a>
+      <a href="/mock.html?box=C" target="_blank" rel="noopener">打开伙伴 C</a>
+    </nav>
+    <div class="layout">
+      <section class="game-panel">
+        <div class="book-top"><h2 id="room">游戏大厅</h2><span class="pill" id="count">0 人</span></div>
+        <p id="status" role="status">先对模拟伙伴说「我要玩游戏」。</p>
+        <p id="buddy" aria-live="polite"></p>
+        <ul id="members" class="members"></ul>
+        <ol id="lines" class="relay-lines"></ol>
+        <div class="game-controls">
+          <button id="record" class="primary" disabled>开始接故事</button>
+          <button id="history" disabled>找以前的伙伴</button>
+          <button id="leave" disabled>退出游戏</button>
+          <button id="end" disabled>结束整局</button>
+        </div>
+        <label class="checkbox"><input id="share" type="checkbox" checked>保存这一句原声，供之后的游戏使用</label>
+      </section>
+      <aside><section class="card settings">
+        <h2 id="name">模拟伙伴</h2>
+        <label for="topic">故事语境</label>
+        <select id="topic"><option>森林冒险</option><option>海底探险</option><option>太空旅行</option></select>
+        <form id="talk-form">
+          <label for="talk">模拟伙伴听到的话</label>
+          <input id="talk" value="我要玩游戏" maxlength="100">
+          <button id="send" class="full" disabled>说给伙伴</button>
+        </form>
+        <p class="field-help">接着输入「我要玩故事接龙」。三人到齐立即开始；三分钟到时两人也可开始。</p>
+        <p id="error" class="error" role="alert" hidden></p>
+      </section></aside>
+    </div>
+    <footer>本地模拟，不连接真实灵矽；音频播放结束由浏览器回报。</footer>
+  </main>
+  <script type="module" src="/mock.js"></script>
+</body>
+</html>
